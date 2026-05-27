@@ -13,10 +13,21 @@ the preferred backend and the default install dependency.
 """
 import functools
 import os
+from urllib.parse import urlparse
 
 from . import utils
 
 _DISABLE = os.environ.get("YF_DISABLE_CURL_CFFI", "").lower() in ("1", "true", "yes")
+_BASE_URL_OVERRIDE = os.environ.get("YFINANCE_BASE_URL")
+_OVERRIDE_HOSTS = {
+    "query1.finance.yahoo.com",
+    "query2.finance.yahoo.com",
+    "finance.yahoo.com",
+    "fc.yahoo.com",
+    "guce.yahoo.com",
+    "consent.yahoo.com",
+    "markets.businessinsider.com",
+}
 
 if not _DISABLE:
     try:
@@ -43,6 +54,27 @@ _FALLBACK_USER_AGENT = (
 _fallback_warned = False
 
 
+def _rewrite_url(url):
+    if not _BASE_URL_OVERRIDE:
+        return url
+    parsed = urlparse(str(url))
+    if parsed.netloc not in _OVERRIDE_HOSTS:
+        return url
+    return f"{_BASE_URL_OVERRIDE.rstrip('/')}{parsed.path}{('?' + parsed.query) if parsed.query else ''}"
+
+
+def _wrap_session(session):
+    if not _BASE_URL_OVERRIDE:
+        return session
+    original_request = session.request
+
+    def request(method, url, *args, **kwargs):
+        return original_request(method, _rewrite_url(url), *args, **kwargs)
+
+    session.request = request
+    return session
+
+
 def _warn_once_on_fallback():
     global _fallback_warned
     if HAS_CURL_CFFI or _fallback_warned:
@@ -58,7 +90,7 @@ def _warn_once_on_fallback():
 def new_session():
     """Create a default Session for the active backend."""
     if HAS_CURL_CFFI:
-        return _backend.Session(impersonate="chrome")
+        return _wrap_session(_backend.Session(impersonate="chrome"))
     _warn_once_on_fallback()
     s = _backend.Session()
     s.headers.update({
@@ -66,7 +98,7 @@ def new_session():
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
     })
-    return s
+    return _wrap_session(s)
 
 
 def cookie_jar(session):
